@@ -179,6 +179,7 @@ with tabs[2]:
 with tabs[3]:
     col1, col2 = st.columns(2)
 
+    # --- Host composition pie chart ---
     with col1:
         fig_pie = px.pie(
             df,
@@ -187,16 +188,26 @@ with tabs[3]:
         )
         st.plotly_chart(fig_pie, use_container_width=True)
 
+    # --- One Health relevance bar chart (SAFE FIX) ---
     with col2:
+        oh_counts = (
+            df["OneHealth"]
+            .value_counts()
+            .reset_index()
+        )
+        oh_counts.columns = ["OneHealth", "Count"]  # 🔑 CRITICAL LINE
+
         fig_oh = px.bar(
-            df["OneHealth"].value_counts().reset_index(),
-            x="index",
-            y="OneHealth",
-            labels={"index": "One Health Category", "OneHealth": "Count"},
-            title="One Health Relevance Distribution"
+            oh_counts,
+            x="OneHealth",
+            y="Count",
+            title="One Health Relevance Distribution",
+            labels={
+                "OneHealth": "One Health Category",
+                "Count": "Number of Viral Taxa"
+            }
         )
         st.plotly_chart(fig_oh, use_container_width=True)
-
 # =========================
 # TAB 4 — Families
 # =========================
@@ -280,5 +291,6 @@ with tabs[7]:
         "one_health_virome_visuals.zip",
         mime="application/zip"
     )
+
 
 
