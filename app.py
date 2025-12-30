@@ -1,14 +1,14 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
+import plotly.express as px
 from scipy.stats import entropy
 import re
 import io
+import zipfile
 
 # =========================
-# Page configuration
+# Page config
 # =========================
 st.set_page_config(
     page_title="One Health Virome Explorer",
@@ -16,31 +16,15 @@ st.set_page_config(
 )
 
 # =========================
-# Custom CSS (Professional Theme)
-# =========================
-st.markdown("""
-<style>
-body {
-    font-family: Arial, sans-serif;
-}
-h1, h2, h3 {
-    color: #1f4e79;
-}
-</style>
-""", unsafe_allow_html=True)
-
-sns.set_style("whitegrid")
-
-# =========================
 # Helper functions
 # =========================
 
-def extract_viral_family(taxon):
+def extract_family(taxon):
     m = re.search(r"\b([a-z]+viridae)\b", taxon.lower())
     return m.group(1).capitalize() if m else "Unresolved"
 
 
-def classify_taxon_safe(taxon):
+def classify_taxon(taxon):
     n = taxon.lower()
 
     if "phage" in n:
@@ -67,30 +51,22 @@ def classify_taxon_safe(taxon):
             "Possible" if host in ["Bird-associated", "Insect-associated"] else \
             "Not evident"
 
-    return extract_viral_family(taxon), host, conf, oh, spill
+    return extract_family(taxon), host, conf, oh, spill
 
 
-def calculate_diversity(counts):
+def alpha_diversity(counts):
     p = counts / counts.sum()
     return entropy(p), 1 - np.sum(p**2)
 
 
-def fig_to_bytes(fig):
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
-    buf.seek(0)
-    return buf
-
 # =========================
-# App Title
+# Title
 # =========================
 st.title("🦠 One Health Virome Explorer")
-st.caption(
-    "Exploratory virome analysis integrating ecology, host inference, and One Health interpretation."
-)
+st.caption("Interactive exploratory virome analysis with One Health framing.")
 
 # =========================
-# Upload Section
+# Upload
 # =========================
 uploaded = st.file_uploader(
     "Upload Kraken-style CSV (Taxon, Count)",
@@ -98,43 +74,43 @@ uploaded = st.file_uploader(
 )
 
 if uploaded is None:
-    st.info("⬆️ Upload a CSV file to begin analysis.")
+    st.info("⬆️ Upload a CSV file to begin.")
     st.stop()
 
 # =========================
-# Data Loading (cached)
+# Load data
 # =========================
 with st.spinner("Processing virome data..."):
     df = pd.read_csv(uploaded)
     df["Count"] = pd.to_numeric(df["Count"], errors="coerce").fillna(0).astype(int)
     df = df[df["Count"] > 0].reset_index(drop=True)
 
-    df[[
-        "Family", "Host", "Host_Confidence",
-        "OneHealth", "Spillover"
-    ]] = df["Taxon"].apply(lambda x: pd.Series(classify_taxon_safe(x)))
+    df[["Family", "Host", "Host_Confidence", "OneHealth", "Spillover"]] = (
+        df["Taxon"].apply(lambda x: pd.Series(classify_taxon(x)))
+    )
 
 total_reads = df["Count"].sum()
-shannon, simpson = calculate_diversity(df["Count"])
+shannon, simpson = alpha_diversity(df["Count"])
 
 # =========================
-# Summary Text
+# Summary
 # =========================
 summary_text = "\n".join([
     f"Total viral taxa: {len(df)}",
-    f"High One Health relevance: {(df['OneHealth']=='High').sum()}",
+    f"High One Health relevance taxa: {(df['OneHealth']=='High').sum()}",
     f"Potential spillover taxa: {df['Spillover'].isin(['Likely','Possible']).sum()}",
     "",
     "Top 5 abundant taxa:",
-    *[f"- {r.Taxon} ({r.Count})" for _, r in df.nlargest(5, "Count").iterrows()]
+    *[f"- {r.Taxon} ({r.Count})" for _, r in df.nlargest(5, 'Count').iterrows()]
 ])
 
 # =========================
 # Tabs
 # =========================
 tabs = st.tabs([
-    "🏠 Overview", "📊 Community", "🧬 Taxonomy",
-    "🌍 One Health", "🧫 Families", "🐾 Hosts",
+    "🏠 Overview", "📊 Community",
+    "🧬 Taxonomy", "🌍 One Health",
+    "🧫 Families", "🐾 Hosts",
     "🚨 Spillover", "📥 Downloads"
 ])
 
@@ -152,22 +128,39 @@ with tabs[0]:
         st.text(summary_text)
 
 # =========================
-# TAB 1 — Community
+# TAB 1 — Community Structure
 # =========================
 with tabs[1]:
-    top = df.nlargest(15, "Count")
+    top_n = st.slider("Top N taxa", 5, 30, 15)
+    top_df = df.nlargest(top_n, "Count")
 
-    fig, ax = plt.subplots()
-    sns.barplot(data=top, x="Count", y="Taxon", ax=ax)
-    st.pyplot(fig)
-    st.download_button("⬇️ Download Plot", fig_to_bytes(fig), "top_taxa.png")
-    plt.close(fig)
+    fig_bar = px.bar(
+        top_df,
+        x="Count",
+        y="Taxon",
+        orientation="h",
+        title="Top Viral Taxa by Abundance"
+    )
+    st.plotly_chart(fig_bar, use_container_width=True)
+
+    sorted_counts = df["Count"].sort_values(ascending=False).values
+    ranks = np.arange(1, len(sorted_counts) + 1)
+
+    fig_rank = px.line(
+        x=ranks,
+        y=sorted_counts,
+        log_x=True,
+        log_y=True,
+        labels={"x": "Rank", "y": "Abundance"},
+        title="Rank–Abundance Curve"
+    )
+    st.plotly_chart(fig_rank, use_container_width=True)
 
 # =========================
 # TAB 2 — Taxonomy
 # =========================
 with tabs[2]:
-    search = st.text_input("🔍 Search Taxon")
+    search = st.text_input("🔍 Search taxon")
     view = df[df["Taxon"].str.contains(search, case=False)] if search else df
 
     st.dataframe(
@@ -176,57 +169,116 @@ with tabs[2]:
             "Host", "Host_Confidence",
             "OneHealth", "Spillover"
         ]],
-        use_container_width=True
+        use_container_width=True,
+        hide_index=True
     )
 
 # =========================
-# TAB 3 — One Health
+# TAB 3 — One Health Patterns
 # =========================
 with tabs[3]:
-    fig, ax = plt.subplots()
-    df["OneHealth"].value_counts().plot.bar(ax=ax)
-    st.pyplot(fig)
-    plt.close(fig)
+    col1, col2 = st.columns(2)
+
+    with col1:
+        fig_pie = px.pie(
+            df,
+            names="Host",
+            title="Host Group Composition"
+        )
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+    with col2:
+        fig_oh = px.bar(
+            df["OneHealth"].value_counts().reset_index(),
+            x="index",
+            y="OneHealth",
+            labels={"index": "One Health Category", "OneHealth": "Count"},
+            title="One Health Relevance Distribution"
+        )
+        st.plotly_chart(fig_oh, use_container_width=True)
 
 # =========================
 # TAB 4 — Families
 # =========================
 with tabs[4]:
-    fam = df.groupby("Family")["Count"].sum().nlargest(10)
-    fig, ax = plt.subplots()
-    sns.barplot(x=fam.values, y=fam.index, ax=ax)
-    st.pyplot(fig)
-    plt.close(fig)
+    fam_df = (
+        df[df["Family"] != "Unresolved"]
+        .groupby("Family")["Count"]
+        .sum()
+        .reset_index()
+        .nlargest(10, "Count")
+    )
+
+    fig_fam = px.bar(
+        fam_df,
+        x="Count",
+        y="Family",
+        orientation="h",
+        title="Top Viral Families"
+    )
+    st.plotly_chart(fig_fam, use_container_width=True)
 
 # =========================
-# TAB 5 — Hosts
+# TAB 5 — Host-specific
 # =========================
 with tabs[5]:
-    host = st.selectbox("Select Host", sorted(df["Host"].unique()))
+    host = st.selectbox("Select Host Group", sorted(df["Host"].unique()))
     hdf = df[df["Host"] == host]
-    st.dataframe(hdf.nlargest(10, "Count"))
+
+    st.dataframe(
+        hdf.nlargest(10, "Count"),
+        use_container_width=True,
+        hide_index=True
+    )
 
 # =========================
 # TAB 6 — Spillover
 # =========================
 with tabs[6]:
     sdf = df[df["Spillover"].isin(["Likely", "Possible"])]
+
     if sdf.empty:
         st.info("No spillover-relevant taxa detected.")
     else:
-        st.dataframe(sdf.nlargest(15, "Count"))
+        st.dataframe(
+            sdf.nlargest(15, "Count"),
+            use_container_width=True,
+            hide_index=True
+        )
 
 # =========================
 # TAB 7 — Downloads
 # =========================
 with tabs[7]:
+
     st.download_button(
         "Download Annotated Table",
         df.to_csv(index=False),
         "virome_annotated.csv"
     )
+
     st.download_button(
         "Download One Health Summary",
         summary_text,
         "one_health_summary.txt"
     )
+
+    # ZIP all visuals
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as z:
+        z.writestr("top_taxa.html", fig_bar.to_html())
+        z.writestr("rank_abundance.html", fig_rank.to_html())
+        z.writestr("host_pie.html", fig_pie.to_html())
+        z.writestr("one_health_bar.html", fig_oh.to_html())
+        z.writestr("family_bar.html", fig_fam.to_html())
+
+    zip_buffer.seek(0)
+
+    st.download_button(
+        "⬇️ Download ALL Visuals (ZIP)",
+        zip_buffer,
+        "one_health_virome_visuals.zip",
+        mime="application/zip"
+    )
+
+
